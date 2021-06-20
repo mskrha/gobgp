@@ -247,6 +247,8 @@ func (b *BGP) Del(x string) error {
 	}
 	b.debug("Removing prefix %s", x)
 	delete(b.db, x)
+	m.Withdrawns = m.Prefixes
+	m.Prefixes = []string{}
 	return b.sendUpdate(m)
 }
 
