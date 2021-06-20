@@ -5,35 +5,35 @@ import (
 	"fmt"
 )
 
-/*
-	BGP message header
-*/
-type header struct {
-	Length uint16
-	Type   uint8
-}
+const (
+	headerLength = 19
+)
 
-/*
-	Encode BGP message header to the wire format
-*/
-func (h *header) marshal() []byte {
-	buf := make([]byte, headerLen)
-	for i := 0; i < 16; i++ {
-		buf[i] = 0xff
-	}
-	binary.BigEndian.PutUint16(buf[16:], h.Length)
-	buf[18] = h.Type
-	return buf
-}
+var headerMarker = []byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
 
-/*
-	Decode BGP message header from the wire format
-*/
-func (h *header) unmarshal(buf []byte) (int, error) {
-	if len(buf) < headerLen {
-		return 0, NewError(1, 2, fmt.Sprintf("unpack: buffer size too small: %d < %d", len(buf), headerLen))
+func marshalMessageHeader(t uint, l int) (ret []byte, err error) {
+	if l < 0 {
+		err = fmt.Errorf("Invalid message length")
+		return
 	}
-	h.Length = binary.BigEndian.Uint16(buf[16:])
-	h.Type = buf[18]
-	return headerLen, nil
+
+	switch t {
+	case msgTypeOpen:
+	case msgTypeUpdate:
+	case msgTypeNotification:
+	case msgTypeKeepAlive:
+	default:
+		err = fmt.Errorf("Unknown message type %d", t)
+		return
+	}
+
+	ret = append(ret, headerMarker...)
+
+	buf := make([]byte, 2)
+	binary.BigEndian.PutUint16(buf, uint16(l+headerLength))
+	ret = append(ret, buf...)
+
+	ret = append(ret, byte(t))
+
+	return
 }

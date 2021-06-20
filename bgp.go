@@ -1,43 +1,28 @@
 package gobgp
 
 import (
-	"encoding/binary"
+	"bytes"
 	"fmt"
 	"net"
 	"time"
 )
 
 const (
+	bgpPort = 179 // Default BGP service TCP port
+
 	/*
-		Types of BGP messages
+		Default date/time format for debug messages
 	*/
-	_ = iota
-	MsgOpen
-	MsgUpdate
-	MsgNotification
-	MsgKeepalive
-	MsgRouterefresh // See RFC 2918
+	defaultDebugTimeFormat = "2006-01-02 15:04:05.000000000"
 
-	headerLen = 19
-
-	MaxSize    = 4096 // Maximum size of a BGP message.
-	BGPVersion = 4    // Current defined version of BGP.
-	bgpPort    = 179  // Default BGP service TCP port
+	processQueueLength = 1000
 )
-
-/*
-	Internal structure holding one network information
-*/
-type prefix struct {
-	Network uint32
-	Mask    uint8
-}
 
 type BgpConfig struct {
 	/*
 		Router ID in dotted format
 	*/
-	RouterId string
+	RouterID string
 
 	/*
 		Local AS number
@@ -55,21 +40,21 @@ type BgpConfig struct {
 	Peer string
 
 	/*
-		Enabled / disabled debugging messagess
+		Enabled / disabled debugging messages
 	*/
 	DebugEnabled bool
 
 	/*
-		Datetime prefix for debug messagess
+		Datetime prefix for debug messages
 	*/
 	DebugTimeFormat string
 }
 
 type BGP struct {
 	/*
-		Router ID as integer
+		Router ID
 	*/
-	id uint32
+	id string
 
 	/*
 		Local AS number
@@ -94,7 +79,7 @@ type BGP struct {
 	/*
 		Internal prefixes database
 	*/
-	db map[string]prefix
+	db map[string]MsgUpdate
 
 	/*
 		Underlying TCP connection
@@ -102,30 +87,39 @@ type BGP struct {
 	conn net.Conn
 
 	/*
-		Enabled / disabled debugging messagess
+		Enabled / disabled debugging messages
 	*/
 	debugEnabled bool
 
 	/*
-		Datetime prefix for debug messagess
+		Datetime prefix for debug messages
 	*/
 	debugTimeFormat string
+
+	/*
+		Used for serial processing of received messages
+	*/
+	ch chan message
+
+	/*
+		Application defined function for handling update messages
+	*/
+	updateHandler func(m MsgUpdate)
 }
 
 /*
 	Create a new BGP instance
 */
-func New(c BgpConfig) (*BGP, error) {
+func New(c BgpConfig, uf func(m MsgUpdate)) (*BGP, error) {
 	var b BGP
 
 	/*
 		Validate Router ID
 	*/
-	id := net.ParseIP(c.RouterId).To4()
-	if id == nil {
+	if net.ParseIP(c.RouterID).To4() == nil {
 		return &b, fmt.Errorf("New: Invalid Router ID")
 	}
-	b.id = binary.BigEndian.Uint32(id)
+	b.id = c.RouterID
 
 	/*
 		Validate AS number
@@ -154,10 +148,39 @@ func New(c BgpConfig) (*BGP, error) {
 	/*
 		Initialise internal prefixes database
 	*/
-	b.db = make(map[string]prefix)
+	b.db = make(map[string]MsgUpdate)
 
+	/*
+		Enable / disable debugging messages
+	*/
 	b.debugEnabled = c.DebugEnabled
-	b.debugTimeFormat = c.DebugTimeFormat
+
+	/*
+		Set date/time format for debugging messages
+	*/
+	if len(c.DebugTimeFormat) > 0 {
+		// Application specified
+		b.debugTimeFormat = c.DebugTimeFormat
+	} else {
+		// Hardcoded default
+		b.debugTimeFormat = defaultDebugTimeFormat
+	}
+
+	/*
+		Initialise channel for message processor
+	*/
+	b.ch = make(chan message, processQueueLength)
+
+	/*
+		Set the update messages handler function
+	*/
+	if uf != nil {
+		// Application specified
+		b.updateHandler = uf
+	} else {
+		// Hardcoded empty default
+		b.updateHandler = func(m MsgUpdate) {}
+	}
 
 	return &b, nil
 }
@@ -173,6 +196,7 @@ func (b *BGP) Connect() error {
 		return err
 	}
 	b.running = true
+	go b.processReply()
 	go b.connection()
 	go b.keepalive()
 	go b.readReply()
@@ -188,36 +212,42 @@ func (b *BGP) Disconnect() error {
 	}
 	b.running = false
 	b.disconnect()
+	close(b.ch)
 	return nil
 }
 
 /*
 	Add prefix to the internal database and send update to the BGP peer
 */
-func (b *BGP) Add(x string) error {
-	if _, e := b.db[x]; e {
-		return fmt.Errorf("Add: Prefix %s alredy exists", x)
+func (b *BGP) Add(p string, o uint, a TypeAsPath, n []string) error {
+	if _, e := b.db[p]; e {
+		return fmt.Errorf("Add: Prefix %s alredy exists", p)
 	}
-	p, err := parsePrefix(x)
+	b.debug("Adding prefix %s", p)
+	var m MsgUpdate
+	m.Prefixes = []string{p}
+	m.Origin = o
+	m.AsPath = a
+	m.NextHops = n
+	_, err := marshalMessageUpdate(m)
 	if err != nil {
 		return err
 	}
-	b.debug("Adding prefix %s", x)
-	b.db[x] = p
-	return b.sendUpdate("add", p)
+	b.db[p] = m
+	return b.sendUpdate(m)
 }
 
 /*
 	Delete prefix from the internal database and send update to the BGP peer
 */
 func (b *BGP) Del(x string) error {
-	p, ok := b.db[x]
+	m, ok := b.db[x]
 	if !ok {
 		return fmt.Errorf("Del: Prefix %s not found", x)
 	}
 	b.debug("Removing prefix %s", x)
 	delete(b.db, x)
-	return b.sendUpdate("del", p)
+	return b.sendUpdate(m)
 }
 
 /*
@@ -244,6 +274,11 @@ func (b *BGP) SetDebugTimeFormat(p string) {
 	Establish the connection to the BGP peer
 */
 func (b *BGP) connect() (err error) {
+	msg, err := marshalMessageOpen(msgOpen{ASN: b.as, HoldTime: b.hold, RouterID: b.id})
+	if err != nil {
+		return
+	}
+
 	b.debug("%s: Trying to connect", b.peer)
 	b.conn, err = net.Dial("tcp", b.peer)
 	if err != nil {
@@ -251,21 +286,8 @@ func (b *BGP) connect() (err error) {
 	}
 	b.debug("%s: Connected", b.peer)
 
-	buf := make([]byte, 10)
-
-	buf[0] = BGPVersion
-	binary.BigEndian.PutUint16(buf[1:], b.as)
-	binary.BigEndian.PutUint16(buf[3:], b.hold)
-	binary.BigEndian.PutUint32(buf[5:], b.id)
-
-	pbuf := make([]byte, 0)
-	buf[9] = uint8(len(pbuf))
-	buf = append(buf, pbuf...)
-
-	h := &header{Length: headerLen + uint16(10+len(pbuf)), Type: MsgOpen}
-
 	b.debug("%s: Sending an OPEN message", b.peer)
-	_, err = b.conn.Write(append(h.marshal(), buf...))
+	_, err = b.conn.Write(msg)
 
 	return
 }
@@ -275,8 +297,10 @@ func (b *BGP) connect() (err error) {
 */
 func (b *BGP) disconnect() {
 	b.debug("%s: Disconnecting", b.peer)
-	b.conn.Close()
-	b.conn = nil
+	if b.conn != nil {
+		b.conn.Close()
+		b.conn = nil
+	}
 	b.debug("%s: Disconnected", b.peer)
 	return
 }
@@ -294,8 +318,8 @@ func (b *BGP) connection() {
 				if len(b.db) > 0 {
 					b.debug("%s: Sending all learned prefixes", b.peer)
 				}
-				for _, p := range b.db {
-					if err := b.sendUpdate("add", p); err != nil {
+				for _, v := range b.db {
+					if err := b.sendUpdate(v); err != nil {
 						fmt.Println("connection:", err)
 					}
 				}
@@ -327,19 +351,24 @@ func (b *BGP) sendKeepalive() {
 	if b.conn == nil {
 		return
 	}
-	h := &header{Length: headerLen, Type: MsgKeepalive}
+	msg, err := marshalMessageHeader(msgTypeKeepAlive, 0)
+	if err != nil {
+		fmt.Println("sendKeepalive:", err)
+		return
+	}
 	b.debug("%s: Sending a KEEPALIVE message", b.peer)
-	if _, err := b.conn.Write(h.marshal()); err != nil {
+	if _, err := b.conn.Write(msg); err != nil {
 		fmt.Println("sendKeepalive:", err)
 		b.disconnect()
 	}
 }
 
 /*
-	Read messagess from the BGP peer
+	Read messages from the BGP peer
 */
 func (b *BGP) readReply() {
-	buf := make([]byte, MaxSize)
+	buf := make([]byte, 65536)
+	var msg message
 	for b.running {
 		if b.conn == nil {
 			fmt.Println("readReply: BGP connection NOT ready!")
@@ -353,28 +382,46 @@ func (b *BGP) readReply() {
 			time.Sleep(500 * time.Millisecond)
 			continue
 		}
-		if n < headerLen {
+		if n < headerLength {
 			fmt.Println("readReply: Too small packet!")
 			continue
 		}
-		h := &header{}
-		h.unmarshal(buf[:headerLen])
-		switch h.Type {
-		case MsgOpen:
-			b.debug("%s: Got an OPEN message", b.peer)
-			go b.sendKeepalive()
-		case MsgUpdate:
-			b.debug("%s: Got an UPDATE message", b.peer)
-		case MsgNotification:
-			b.debug("%s: Got a NOTIFICATION message", b.peer)
-			b.disconnect()
-		case MsgKeepalive:
-			b.debug("%s: Got a KEEPALIVE message", b.peer)
-		case MsgRouterefresh:
-			b.debug("%s: Got a ROUTEREFRESH message", b.peer)
-		default:
-			fmt.Printf("readReply: BGP message type %d not known!\n", h.Type)
+		pkts := bytes.Split(buf[:n], headerMarker)
+		if len(pkts) < 2 {
+			fmt.Println("readReply: Invalid packet")
 			continue
+		}
+		for _, v := range pkts[1:] {
+			msg, err = unmarshalMessage(v)
+			if err != nil {
+				fmt.Println("readReply:", err)
+				continue
+			}
+			b.ch <- msg
+		}
+	}
+}
+
+/*
+	Process messages received from the BGP peer
+*/
+func (b *BGP) processReply() {
+	for m := range b.ch {
+		switch m.Type {
+		case msgTypeOpen:
+			b.debug("%s: processReply: Got an OPEN message", b.peer)
+			go b.sendKeepalive()
+		case msgTypeUpdate:
+			b.debug("%s: processReply: Got an UPDATE message", b.peer)
+			b.updateHandler(m.Data.(MsgUpdate))
+		case msgTypeNotification:
+			b.debug("%s: processReply: Got a NOTIFICATION message", b.peer)
+			fmt.Println(m.Data.(msgNotification))
+			b.disconnect()
+		case msgTypeKeepAlive:
+			b.debug("%s: processReply: Got a KEEPALIVE message", b.peer)
+		default:
+			fmt.Printf("%s: processReply: BUG BUG BUG\n", b.peer)
 		}
 	}
 }
@@ -382,73 +429,19 @@ func (b *BGP) readReply() {
 /*
 	Send UPDATE message to the BGP peer
 */
-func (b *BGP) sendUpdate(t string, p prefix) (err error) {
+func (b *BGP) sendUpdate(m MsgUpdate) (err error) {
 	if b.conn == nil {
 		err = fmt.Errorf("sendUpdate: BGP connection NOT ready!")
 		return
 	}
 
-	/*
-		Prefix to be sent
-	*/
-	bufNLRI := make([]byte, 5)
-	bufNLRI[0] = p.Mask
-	binary.BigEndian.PutUint32(bufNLRI[1:], p.Network)
-
-	var data []byte
-	switch t {
-	case "add":
-		bufWitdrawn := make([]byte, 2)
-		data = append(data, bufWitdrawn...)
-
-		bufTotalPathAttributeLength := make([]byte, 2)
-		bufTotalPathAttributeLength[1] = 20
-		data = append(data, bufTotalPathAttributeLength...)
-
-		bufAttributeOrigin := make([]byte, 4)
-		bufAttributeOrigin[0] = 0x40 // transitive, well-known, complete
-		bufAttributeOrigin[1] = 0x01 // attribute ORIGIN
-		bufAttributeOrigin[2] = 0x01 // attribute length
-		bufAttributeOrigin[3] = 0x00 // IGP
-		data = append(data, bufAttributeOrigin...)
-
-		bufAttributeAsPath := make([]byte, 9)
-		bufAttributeAsPath[0] = 0x40 // transitive, well-known, complete
-		bufAttributeAsPath[1] = 0x02 // attribute AS_PATH
-		bufAttributeAsPath[2] = 0x06 // attribute length
-		bufAttributeAsPath[3] = 0x02 // AS_SEQUENCE
-		bufAttributeAsPath[4] = 0x01 // sequence length
-		binary.BigEndian.PutUint16(bufAttributeAsPath[5:], b.as)
-		data = append(data, bufAttributeAsPath...)
-
-		bufAttributeNextHop := make([]byte, 7)
-		bufAttributeNextHop[0] = 0x40 // transitive, well-known, complete
-		bufAttributeNextHop[1] = 0x03 // attribute NEXT_HOP
-		bufAttributeNextHop[2] = 0x04 // attribute length
-		binary.BigEndian.PutUint32(bufAttributeNextHop[3:], b.id)
-		data = append(data, bufAttributeNextHop...)
-
-		data = append(data, bufNLRI...)
-	case "del":
-		bufWitdrawn := make([]byte, 2)
-		bufWitdrawn[1] = 0x05
-		data = append(data, bufWitdrawn...)
-
-		data = append(data, bufNLRI...)
-
-		bufTotalPathAttributeLength := make([]byte, 2)
-		data = append(data, bufTotalPathAttributeLength...)
-	default:
-		err = fmt.Errorf("sendUpdate: BUG BUG BUG")
+	msg, err := marshalMessageUpdate(m)
+	if err != nil {
 		return
 	}
-	head := &header{Length: uint16(headerLen + len(data)), Type: MsgUpdate}
-	var buf []byte
-	buf = append(buf, head.marshal()...)
-	buf = append(buf, data...)
 
 	b.debug("%s: Sending an UPDATE message", b.peer)
-	_, err = b.conn.Write(buf)
+	_, err = b.conn.Write(msg)
 	return
 }
 
@@ -456,18 +449,4 @@ func (b *BGP) debug(f string, a ...interface{}) {
 	if b.debugEnabled {
 		fmt.Printf(time.Now().Format(b.debugTimeFormat)+": "+f+"\n", a...)
 	}
-}
-
-/*
-	Parse CIDR prefix from string to the struct prefix
-*/
-func parsePrefix(x string) (ret prefix, err error) {
-	_, p, err := net.ParseCIDR(x)
-	if err != nil {
-		return
-	}
-	ret.Network = binary.BigEndian.Uint32(p.IP.To4())
-	s, _ := p.Mask.Size()
-	ret.Mask = uint8(s)
-	return
 }
