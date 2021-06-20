@@ -3,15 +3,24 @@
 ## gobgp
 
 ### Description
-BGP speaker library in Golang.
+Pure Go library implementing the [RFC 4271 - Border Gateway Protocol 4](https://datatracker.ietf.org/doc/html/rfc4271).
 
 ### Installation
 `go get github.com/mskrha/gobgp`
 
 ### Warning
-This library implements only the very minimum to be able to establish a BGP session and send updates to the peer.
+The implementation is not yet full according to the RFC, but most of functionality should be working. All testing was done against the [BIRD 1.6](https://bird.network.cz/).
 
-### Usage
+### Tested (and working) functionality
+* Connect to the BGP peer and establish a BGP session
+* Re-establish the connection in case of failure
+* Send a keepalive packets at 1/3 of holdtime
+* Response on notification messages
+* Send and receive update messages
+* Use internal database of prefixes (modified by the Add and Del functions)
+* Resend all prefixes from internal database on reconnect
+
+### Example of usage
 ```go
 package main
 
@@ -22,13 +31,18 @@ import (
 	"github.com/mskrha/gobgp"
 )
 
+func updateHandler(m gobgp.MsgUpdate) {
+	fmt.Printf("%+v\n", m)
+}
+
 func main() {
 	conf := gobgp.BgpConfig{}
-	conf.RouterId = "1.1.1.1"
+	conf.RouterID = "1.1.1.1"
 	conf.ASN = 1111
 	conf.HoldTime = 30
 	conf.Peer = "2.2.2.2"
-	b, err := gobgp.New(conf)
+	conf.DebugEnabled = true
+	b, err := gobgp.New(conf, updateHandler)
 	if err != nil {
 		fmt.Println(err)
 		return
@@ -40,14 +54,14 @@ func main() {
 		return
 	}
 
-	err = b.Add("1.2.3.4/32")
-	if err != nil {
-		fmt.Println(err)
+	if err := b.Add("12.34.56.78/32", gobgp.OriginTypeIGP, gobgp.TypeAsPath{Type: gobgp.AsPathTypeSequence, Path: []uint16{conf.ASN}}, []string{"1.1.1.1"}); err != nil {
+	        fmt.Println(err)
 	}
+
 	time.Sleep(5 * time.Second)
-	err = b.Del("1.2.3.4/32")
-	if err != nil {
-		fmt.Println(err)
+
+	if err := b.Del("12.34.56.78/32"); err != nil {
+	        fmt.Println(err)
 	}
 
 	time.Sleep(15 * time.Second)
