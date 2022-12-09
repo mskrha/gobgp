@@ -140,10 +140,11 @@ func New(c BgpConfig, uf func(m MsgUpdate)) (*BGP, error) {
 	/*
 		Validate peer IP address
 	*/
-	if net.ParseIP(c.Peer) == nil {
+	p, err := parsePeerAddress(c.Peer)
+	if err != nil {
 		return &b, fmt.Errorf("New: Invalid peer IP address")
 	}
-	b.peer = fmt.Sprintf("%s:%d", c.Peer, bgpPort)
+	b.peer = fmt.Sprintf("%s:%d", p, bgpPort)
 
 	/*
 		Initialise internal prefixes database
