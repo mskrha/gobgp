@@ -49,5 +49,5 @@ func parsePeerAddress(x string) (string, error) {
 		}
 	}
 
-	return
+	return "", fmt.Errorf("Not found any valid peer IP address")
 }
