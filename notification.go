@@ -51,7 +51,7 @@ var (
 		11: "Malformed AS_PATH",
 	}
 
-	msgErrSubCodesNotification = map[uint8]string{
+	msgErrSubCodesCease = map[uint8]string{
 		1:  "Maximum Number of Prefixes Reached",
 		2:  "Administrative Shutdown",
 		3:  "Peer De-configured",
