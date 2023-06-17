@@ -137,6 +137,10 @@ func unmarshalMessageNotification(in []byte) (ret msgNotification, err error) {
 		if _, ok := msgErrSubCodesUpdate[ret.SubCode]; !ok {
 			err = fmt.Errorf("Invalid notification update error subcode")
 		}
+	case 6:
+		if _, ok := msgErrSubCodesCease[ret.SubCode]; !ok {
+			err = fmt.Errorf("Invalid notification cease error subcode")
+		}
 	}
 
 	return
