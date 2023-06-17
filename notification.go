@@ -39,12 +39,12 @@ var (
 	}
 
 	msgErrSubCodesUpdate = map[uint8]string{
-		1: "Malformed Attribute List",
-		2: "Unrecognized Well-known Attribute",
-		3: "Missing Well-known Attribute",
-		4: "Attribute Flags Error",
-		5: "Attribute Length Error",
-		6: "Invalid ORIGIN Attribute",
+		1:  "Malformed Attribute List",
+		2:  "Unrecognized Well-known Attribute",
+		3:  "Missing Well-known Attribute",
+		4:  "Attribute Flags Error",
+		5:  "Attribute Length Error",
+		6:  "Invalid ORIGIN Attribute",
 		8:  "Invalid NEXT_HOP Attribute",
 		9:  "Optional Attribute Error",
 		10: "Invalid Network Field",
