@@ -419,7 +419,12 @@ func (b *BGP) processReply() {
 			b.updateHandler(m.Data.(MsgUpdate))
 		case msgTypeNotification:
 			b.debug("%s: processReply: Got a NOTIFICATION message", b.peer)
-			fmt.Println(m.Data.(msgNotification))
+			x, err := parseNotificationMessage(m.Data.(msgNotification))
+			if err != nil {
+				fmt.Println(err)
+			} else {
+				fmt.Println(x)
+			}
 			b.disconnect()
 		case msgTypeKeepAlive:
 			b.debug("%s: processReply: Got a KEEPALIVE message", b.peer)
