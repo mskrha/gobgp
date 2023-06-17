@@ -51,3 +51,24 @@ func parsePeerAddress(x string) (string, error) {
 
 	return "", fmt.Errorf("Not found any valid peer IP address")
 }
+
+func parseNotificationMessage(m msgNotification) (ret string, err error) {
+	switch m.Code {
+	case 1:
+		ret = fmt.Sprintf("Message Header Error, %s", msgErrSubCodesMsg[m.SubCode])
+	case 2:
+		ret = fmt.Sprintf("OPEN Message Error, %s", msgErrSubCodesOpen[m.SubCode])
+	case 3:
+		ret = fmt.Sprintf("UPDATE Message Error, %s", msgErrSubCodesUpdate[m.SubCode])
+	case 4:
+		ret = fmt.Sprintf("Hold Timer Expired")
+	case 5:
+		ret = fmt.Sprintf("Finite State Machine Error")
+	case 6:
+		ret = fmt.Sprintf("Cease, %s", msgErrSubCodesCease[m.SubCode])
+	}
+	if len(m.Data) > 0 {
+		ret = fmt.Sprintf("%s, %s", ret, m.Data)
+	}
+	return
+}
