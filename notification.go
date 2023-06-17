@@ -34,7 +34,6 @@ var (
 		2: "Bad Peer AS",
 		3: "Bad BGP Identifier",
 		4: "Unsupported Optional Parameter",
-		// 5: "Authentication Failure", DEPRECATED (see Appendix A)
 		6: "Unacceptable Hold Time",
 	}
 
@@ -45,7 +44,6 @@ var (
 		4: "Attribute Flags Error",
 		5: "Attribute Length Error",
 		6: "Invalid ORIGIN Attribute",
-		// 7:  "AS Routing Loop", DEPRECATED (see Appendix A)
 		8:  "Invalid NEXT_HOP Attribute",
 		9:  "Optional Attribute Error",
 		10: "Invalid Network Field",
