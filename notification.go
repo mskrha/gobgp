@@ -50,6 +50,19 @@ var (
 		10: "Invalid Network Field",
 		11: "Malformed AS_PATH",
 	}
+
+	msgErrSubCodesNotification = map[uint8]string{
+		1:  "Maximum Number of Prefixes Reached",
+		2:  "Administrative Shutdown",
+		3:  "Peer De-configured",
+		4:  "Administrative Reset",
+		5:  "Connection Rejected",
+		6:  "Other Configuration Change",
+		7:  "Connection Collision Resolution",
+		8:  "Out of Resources",
+		9:  "Hard Reset",
+		10: "BFD Down",
+	}
 )
 
 func marshalMessageNotification(m msgNotification) (ret []byte, err error) {
