@@ -35,6 +35,7 @@ var (
 		3: "Bad BGP Identifier",
 		4: "Unsupported Optional Parameter",
 		6: "Unacceptable Hold Time",
+		7: "Unsupported Capability",
 	}
 
 	msgErrSubCodesUpdate = map[uint8]string{
